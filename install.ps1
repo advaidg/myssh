@@ -94,19 +94,41 @@ if (-not $ssh -or -not $keygen) {
 Write-Step "ssh:     $($ssh.Source)"
 Write-Step "keygen:  $($keygen.Source)"
 
-# ---- paramiko ------------------------------------------------------------
-$pyArgsBase = $python.Args
-$paramikoCheck = & $python.Path @pyArgsBase -c 'import paramiko' 2>$null
-if ($LASTEXITCODE -ne 0) {
-    Write-Info ""
-    Write-Step "Installing paramiko (required for 'myssh register')..."
-    & $python.Path @pyArgsBase -m pip install --user --quiet paramiko 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warn2 "Could not install paramiko automatically."
-        Write-Warn2 "Run manually before 'myssh register':"
-        Write-Warn2 "    $($python.Path) -m pip install --user paramiko"
+# ---- bundled venv for paramiko ------------------------------------------
+$VenvDir = Join-Path $env:USERPROFILE '.local\share\myssh\venv'
+$VenvPy  = Join-Path $VenvDir 'Scripts\python.exe'
+
+Write-Info ""
+Write-Step "Preparing virtualenv at $VenvDir..."
+$venvParent = Split-Path -Parent $VenvDir
+if (-not (Test-Path $venvParent)) { New-Item -ItemType Directory -Path $venvParent -Force | Out-Null }
+
+if (-not (Test-Path $VenvPy)) {
+    & $python.Path @($python.Args) -m venv $VenvDir
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $VenvPy)) {
+        Write-Err "Could not create virtualenv at $VenvDir."
+        exit 1
     }
 }
+
+& $VenvPy -c 'import paramiko' 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Write-Step "Installing paramiko into venv (required for 'myssh register')..."
+    & $VenvPy -m pip install --quiet --upgrade pip 2>$null | Out-Null
+    & $VenvPy -m pip install --quiet paramiko
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warn2 "Quiet install failed. Retrying with verbose output:"
+        & $VenvPy -m pip install paramiko
+        if ($LASTEXITCODE -ne 0) {
+            Write-Err "Could not install paramiko into $VenvDir."
+            exit 1
+        }
+    }
+}
+
+# Use the venv interpreter for the shim so the tool is self-contained.
+$python = @{ Path = $VenvPy; Args = @(); Version = (& $VenvPy -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])').Trim() }
+Write-Step "Using interpreter: $($python.Path) ($($python.Version))"
 
 # ---- install dir ---------------------------------------------------------
 if (-not (Test-Path $InstallDir)) {

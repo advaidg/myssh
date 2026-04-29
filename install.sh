@@ -26,6 +26,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE="$SCRIPT_DIR/myssh.py"
 BIN_DIR="${MYSSH_BIN_DIR:-$HOME/.local/bin}"
 TARGET="$BIN_DIR/myssh"
+VENV_DIR="${MYSSH_VENV_DIR:-$HOME/.local/share/myssh/venv}"
 
 if [ ! -f "$SOURCE" ]; then
   error "myssh.py not found next to install.sh ($SOURCE)."
@@ -78,16 +79,39 @@ fi
 step "ssh:     $(command -v ssh)"
 step "keygen:  $(command -v ssh-keygen)"
 
-# ---- ensure paramiko ------------------------------------------------------
-if ! "$PYTHON_BIN" -c 'import paramiko' >/dev/null 2>&1; then
-  info ""
-  step "Installing paramiko (required for `myssh register`)..."
-  if ! "$PYTHON_BIN" -m pip install --user --quiet paramiko 2>/dev/null; then
-    warn "Could not install paramiko automatically."
-    warn "Run this manually before using \`myssh register\`:"
-    warn "    $PYTHON_BIN -m pip install --user paramiko"
+# ---- bundled venv for paramiko -------------------------------------------
+# Use a dedicated virtualenv so paramiko works even on PEP 668-managed Pythons
+# (Homebrew, Debian-packaged python3, etc.) and never leaks into system site.
+info ""
+step "Preparing virtualenv at $VENV_DIR..."
+mkdir -p "$(dirname "$VENV_DIR")"
+if [ ! -x "$VENV_DIR/bin/python3" ] && [ ! -x "$VENV_DIR/bin/python" ]; then
+  if ! "$PYTHON_BIN" -m venv "$VENV_DIR"; then
+    error "Could not create virtualenv at $VENV_DIR."
+    step "On Debian/Ubuntu: sudo apt install python3-venv"
+    exit 1
   fi
 fi
+
+VENV_PY="$VENV_DIR/bin/python3"
+[ -x "$VENV_PY" ] || VENV_PY="$VENV_DIR/bin/python"
+
+if ! "$VENV_PY" -c 'import paramiko' >/dev/null 2>&1; then
+  step "Installing paramiko into venv (required for 'myssh register')..."
+  "$VENV_PY" -m pip install --quiet --upgrade pip >/dev/null 2>&1 || true
+  if ! "$VENV_PY" -m pip install --quiet paramiko; then
+    warn "paramiko install failed. Retrying with verbose output:"
+    "$VENV_PY" -m pip install paramiko || {
+      error "Could not install paramiko into $VENV_DIR."
+      step  "Fix the error above, then re-run ./install.sh"
+      exit 1
+    }
+  fi
+fi
+
+# From here on, the installed myssh shebang must point at the venv python.
+PYTHON_BIN="$VENV_PY"
+step "Using interpreter: $PYTHON_BIN"
 
 # ---- install binary -------------------------------------------------------
 mkdir -p "$BIN_DIR"

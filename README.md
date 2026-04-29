@@ -31,12 +31,12 @@ What it does:
 
 1. Detects your OS and shell.
 2. Validates that `python3` (≥3.8), `ssh`, and `ssh-keygen` are present.
-3. `pip install --user paramiko` (only needed for `register`).
-4. Copies `myssh.py` → `~/.local/bin/myssh` (`0755`).
+3. Creates a dedicated virtualenv at `~/.local/share/myssh/venv` and installs `paramiko` into it (only needed for `register`). This sidesteps PEP 668 / externally-managed Python issues.
+4. Copies `myssh.py` → `~/.local/bin/myssh` (`0755`) and rewrites the shebang to point at the venv's Python so the tool is self-contained.
 5. Adds `~/.local/bin` to your PATH via the right shell profile (backup file written first).
 6. Runs `myssh help` to confirm the install.
 
-Override the target dir with `MYSSH_BIN_DIR=/somewhere/else ./install.sh`. Skip the overwrite prompt with `MYSSH_FORCE=1`.
+Override defaults: `MYSSH_BIN_DIR=/somewhere/else`, `MYSSH_VENV_DIR=/somewhere/else`. Skip the overwrite prompt with `MYSSH_FORCE=1`.
 
 ### Windows (PowerShell)
 
@@ -49,8 +49,8 @@ Override the target dir with `MYSSH_BIN_DIR=/somewhere/else ./install.sh`. Skip 
 What it does:
 
 1. Validates Python 3.8+ and the OpenSSH client (`ssh`, `ssh-keygen`).
-2. `pip install --user paramiko`.
-3. Copies `myssh.py` to `%USERPROFILE%\.local\bin\` and writes a `myssh.cmd` shim that calls Python.
+2. Creates a dedicated virtualenv at `%USERPROFILE%\.local\share\myssh\venv` and installs `paramiko` into it.
+3. Copies `myssh.py` to `%USERPROFILE%\.local\bin\` and writes a `myssh.cmd` shim that calls the venv's Python.
 4. Adds the install directory to PATH (User scope by default).
 5. Runs `myssh help`.
 
@@ -156,6 +156,8 @@ myssh --version
 | `~/.ssh/myssh_id_ed25519.pub` | Public key (copied to remote). |
 | `~/.ssh/config` | Aliases. `myssh` blocks are wrapped in `# === BEGIN myssh: <alias> ===` markers so they're easy to spot and easy to remove. |
 | `~/.ssh/known_hosts` | First-time host fingerprints, written only after you confirm. |
+| `~/.local/bin/myssh` | The CLI entry point (shebang points at the venv below). |
+| `~/.local/share/myssh/venv` | Dedicated virtualenv that owns `paramiko`. Delete this directory to fully uninstall. |
 
 Example managed entry:
 
@@ -186,7 +188,7 @@ Host prod
 
 | Problem | What to try |
 |---|---|
-| `paramiko is required for register` | `python3 -m pip install --user paramiko` |
+| `paramiko is required for register` | Re-run `./install.sh` (or `.\install.ps1` on Windows) — it creates the venv and installs paramiko there. |
 | `password authentication failed` | Re-check the user/password. Some servers disable `PasswordAuthentication`; you'll need to install the public key by hand the first time. |
 | `could not reach <host>:<port>` | Check the IP/hostname, the port, and that nothing (firewall, security group) is blocking outbound SSH. |
 | `passwordless login still failing` after register | Run `myssh test <alias>` to see the exact ssh error. Common cause: server has `PubkeyAuthentication no` or `~/.ssh` perms drifted. |
