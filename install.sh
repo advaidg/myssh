@@ -2,6 +2,11 @@
 # myssh installer for macOS / Linux / WSL / Git-Bash on Windows.
 #
 # Installs myssh to ~/.local/bin/myssh and ensures that directory is on PATH.
+#
+# Variants:
+#   --python   Python edition (uses paramiko in a dedicated venv).
+#   --shell    Shell edition (pure bash, uses ssh-copy-id, no Python needed).
+# If no flag is passed and the terminal is interactive, you'll be prompted.
 
 set -euo pipefail
 
@@ -23,13 +28,58 @@ warn()    { printf '%s%s%s\n' "$C_YELLOW" "$*" "$C_RESET" >&2; }
 error()   { printf '%sError:%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SOURCE="$SCRIPT_DIR/myssh.py"
 BIN_DIR="${MYSSH_BIN_DIR:-$HOME/.local/bin}"
 TARGET="$BIN_DIR/myssh"
 VENV_DIR="${MYSSH_VENV_DIR:-$HOME/.local/share/myssh/venv}"
 
+# ---- variant selection ----------------------------------------------------
+VARIANT=""
+for arg in "$@"; do
+  case "$arg" in
+    --python|--py)     VARIANT="python" ;;
+    --shell|--sh|--bash) VARIANT="shell" ;;
+    -h|--help)
+      cat <<USAGE
+Usage: ./install.sh [--python | --shell]
+
+  --python   Python edition (uses paramiko in a venv).
+  --shell    Shell edition (pure bash, uses ssh-copy-id).
+
+If no variant is given, the installer prompts when run interactively.
+Env: MYSSH_BIN_DIR (default ~/.local/bin), MYSSH_VENV_DIR, MYSSH_FORCE=1.
+USAGE
+      exit 0
+      ;;
+    *) error "unknown argument: $arg"; exit 2 ;;
+  esac
+done
+
+if [ -z "$VARIANT" ]; then
+  if [ -t 0 ] && [ -t 1 ]; then
+    info "${C_BOLD}myssh installer${C_RESET}"
+    info "Choose an edition:"
+    info "  ${C_CYAN}1${C_RESET}) ${C_BOLD}Python${C_RESET}  — uses paramiko in a dedicated venv"
+    info "  ${C_CYAN}2${C_RESET}) ${C_BOLD}Shell${C_RESET}   — pure bash, uses ssh-copy-id (no Python needed)"
+    printf 'Choice [1]: '
+    read -r choice || choice=""
+    case "${choice:-1}" in
+      2|s|sh|shell|bash) VARIANT="shell" ;;
+      *)                 VARIANT="python" ;;
+    esac
+    info ""
+  else
+    VARIANT="python"
+  fi
+fi
+
+case "$VARIANT" in
+  python) SOURCE="$SCRIPT_DIR/myssh.py" ;;
+  shell)  SOURCE="$SCRIPT_DIR/myssh.sh" ;;
+  *) error "internal: unknown VARIANT '$VARIANT'"; exit 1 ;;
+esac
+
 if [ ! -f "$SOURCE" ]; then
-  error "myssh.py not found next to install.sh ($SOURCE)."
+  error "$(basename "$SOURCE") not found next to install.sh ($SOURCE)."
   exit 1
 fi
 
@@ -40,29 +90,14 @@ case "$(uname -s 2>/dev/null || echo)" in
   Linux*)                OS_KIND="linux" ;;
   MINGW*|MSYS*|CYGWIN*)  OS_KIND="windows-bash" ;;
 esac
-info "${C_BOLD}myssh installer${C_RESET}"
+info "${C_BOLD}myssh installer${C_RESET} (${VARIANT} edition)"
 step "Detected: $OS_KIND"
 
-# ---- locate python --------------------------------------------------------
-PYTHON_BIN=""
-for cand in python3 python; do
-  if command -v "$cand" >/dev/null 2>&1; then
-    if "$cand" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' 2>/dev/null; then
-      PYTHON_BIN="$(command -v "$cand")"
-      break
-    fi
-  fi
-done
-if [ -z "$PYTHON_BIN" ]; then
-  error "Python 3.8+ is required but was not found."
-  step  "Install Python 3 from https://python.org or via your package manager."
-  exit 1
-fi
-step "Python:  $PYTHON_BIN ($($PYTHON_BIN --version 2>&1))"
-
 # ---- check ssh tooling ----------------------------------------------------
+required_tools=(ssh ssh-keygen)
+[ "$VARIANT" = "shell" ] && required_tools+=(ssh-copy-id awk grep sed mktemp)
 missing=()
-for tool in ssh ssh-keygen; do
+for tool in "${required_tools[@]}"; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     missing+=("$tool")
   fi
@@ -70,48 +105,64 @@ done
 if [ "${#missing[@]}" -gt 0 ]; then
   error "Required tools missing: ${missing[*]}"
   case "$OS_KIND" in
-    macos) step "Install via: xcode-select --install" ;;
-    linux) step "Install via: sudo apt install openssh-client  (or your distro equivalent)" ;;
-    windows-bash) step "Install OpenSSH from Windows Settings > Apps > Optional Features." ;;
+    macos)        step "Install via: xcode-select --install" ;;
+    linux)        step "Install via: sudo apt install openssh-client  (or your distro equivalent)" ;;
+    windows-bash) step "Install Git for Windows (which bundles OpenSSH) from https://git-scm.com/download/win" ;;
   esac
   exit 1
 fi
 step "ssh:     $(command -v ssh)"
 step "keygen:  $(command -v ssh-keygen)"
+[ "$VARIANT" = "shell" ] && step "copy-id: $(command -v ssh-copy-id)"
 
-# ---- bundled venv for paramiko -------------------------------------------
-# Use a dedicated virtualenv so paramiko works even on PEP 668-managed Pythons
-# (Homebrew, Debian-packaged python3, etc.) and never leaks into system site.
-info ""
-step "Preparing virtualenv at $VENV_DIR..."
-mkdir -p "$(dirname "$VENV_DIR")"
-if [ ! -x "$VENV_DIR/bin/python3" ] && [ ! -x "$VENV_DIR/bin/python" ]; then
-  if ! "$PYTHON_BIN" -m venv "$VENV_DIR"; then
-    error "Could not create virtualenv at $VENV_DIR."
-    step "On Debian/Ubuntu: sudo apt install python3-venv"
+# ---- python + paramiko (only when installing the python edition) ---------
+if [ "$VARIANT" = "python" ]; then
+  PYTHON_BIN=""
+  for cand in python3 python; do
+    if command -v "$cand" >/dev/null 2>&1; then
+      if "$cand" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' 2>/dev/null; then
+        PYTHON_BIN="$(command -v "$cand")"
+        break
+      fi
+    fi
+  done
+  if [ -z "$PYTHON_BIN" ]; then
+    error "Python 3.8+ is required for the python edition."
+    step  "Install Python 3, or re-run with --shell to use the bash edition instead."
     exit 1
   fi
-fi
+  step "Python:  $PYTHON_BIN ($($PYTHON_BIN --version 2>&1))"
 
-VENV_PY="$VENV_DIR/bin/python3"
-[ -x "$VENV_PY" ] || VENV_PY="$VENV_DIR/bin/python"
-
-if ! "$VENV_PY" -c 'import paramiko' >/dev/null 2>&1; then
-  step "Installing paramiko into venv (required for 'myssh register')..."
-  "$VENV_PY" -m pip install --quiet --upgrade pip >/dev/null 2>&1 || true
-  if ! "$VENV_PY" -m pip install --quiet paramiko; then
-    warn "paramiko install failed. Retrying with verbose output:"
-    "$VENV_PY" -m pip install paramiko || {
-      error "Could not install paramiko into $VENV_DIR."
-      step  "Fix the error above, then re-run ./install.sh"
+  info ""
+  step "Preparing virtualenv at $VENV_DIR..."
+  mkdir -p "$(dirname "$VENV_DIR")"
+  if [ ! -x "$VENV_DIR/bin/python3" ] && [ ! -x "$VENV_DIR/bin/python" ]; then
+    if ! "$PYTHON_BIN" -m venv "$VENV_DIR"; then
+      error "Could not create virtualenv at $VENV_DIR."
+      step "On Debian/Ubuntu: sudo apt install python3-venv"
       exit 1
-    }
+    fi
   fi
-fi
 
-# From here on, the installed myssh shebang must point at the venv python.
-PYTHON_BIN="$VENV_PY"
-step "Using interpreter: $PYTHON_BIN"
+  VENV_PY="$VENV_DIR/bin/python3"
+  [ -x "$VENV_PY" ] || VENV_PY="$VENV_DIR/bin/python"
+
+  if ! "$VENV_PY" -c 'import paramiko' >/dev/null 2>&1; then
+    step "Installing paramiko into venv (required for 'myssh register')..."
+    "$VENV_PY" -m pip install --quiet --upgrade pip >/dev/null 2>&1 || true
+    if ! "$VENV_PY" -m pip install --quiet paramiko; then
+      warn "paramiko install failed. Retrying with verbose output:"
+      "$VENV_PY" -m pip install paramiko || {
+        error "Could not install paramiko into $VENV_DIR."
+        step  "Fix the error above, then re-run ./install.sh"
+        exit 1
+      }
+    fi
+  fi
+
+  PYTHON_BIN="$VENV_PY"
+  step "Using interpreter: $PYTHON_BIN"
+fi
 
 # ---- install binary -------------------------------------------------------
 mkdir -p "$BIN_DIR"
@@ -134,14 +185,16 @@ fi
 cp "$SOURCE" "$TARGET"
 chmod 0755 "$TARGET"
 
-# Ensure shebang resolves to the python we validated. Rewrite first line to be safe.
-TMP="$TARGET.tmp"
-{
-  printf '#!%s\n' "$PYTHON_BIN"
-  tail -n +2 "$TARGET"
-} > "$TMP"
-mv "$TMP" "$TARGET"
-chmod 0755 "$TARGET"
+if [ "$VARIANT" = "python" ]; then
+  # Pin the shebang to the venv interpreter so the tool is self-contained.
+  TMP="$TARGET.tmp"
+  {
+    printf '#!%s\n' "$PYTHON_BIN"
+    tail -n +2 "$TARGET"
+  } > "$TMP"
+  mv "$TMP" "$TARGET"
+  chmod 0755 "$TARGET"
+fi
 
 # ---- PATH plumbing --------------------------------------------------------
 needs_path=true

@@ -17,6 +17,15 @@ myssh prod                         # every other day
 
 The password is only used in memory during the initial handshake; it is never written to disk and never sent to the server again.
 
+## Two editions
+
+Pick whichever fits your environment — they share an identical CLI and SSH-config marker convention, so you can switch between them at any time.
+
+| Edition | When to use | Depends on |
+|---|---|---|
+| **Python** (`myssh.py`) | Default. You're on macOS/Linux/WSL with Python 3.8+. | OpenSSH client, Python 3.8+, [paramiko](https://pypi.org/project/paramiko/) (auto-installed into a dedicated venv) |
+| **Shell** (`myssh.sh`) | You're on Windows with Git Bash, or you don't want any Python in the loop. | OpenSSH client only — `ssh`, `ssh-keygen`, `ssh-copy-id` |
+
 ---
 
 ## Install
@@ -24,10 +33,12 @@ The password is only used in memory during the initial handshake; it is never wr
 ### macOS / Linux / WSL / Git Bash
 
 ```bash
-./install.sh
+./install.sh             # interactive prompt — Python or Shell
+./install.sh --python    # explicitly pick Python edition
+./install.sh --shell     # explicitly pick Shell edition
 ```
 
-What it does:
+What it does (Python edition):
 
 1. Detects your OS and shell.
 2. Validates that `python3` (≥3.8), `ssh`, and `ssh-keygen` are present.
@@ -36,9 +47,17 @@ What it does:
 5. Adds `~/.local/bin` to your PATH via the right shell profile (backup file written first).
 6. Runs `myssh help` to confirm the install.
 
+What it does (Shell edition):
+
+1. Detects your OS and shell.
+2. Validates that `ssh`, `ssh-keygen`, and `ssh-copy-id` are present.
+3. Copies `myssh.sh` → `~/.local/bin/myssh` (`0755`).
+4. Adds `~/.local/bin` to your PATH (same profile handling as above).
+5. Runs `myssh help` to confirm the install.
+
 Override defaults: `MYSSH_BIN_DIR=/somewhere/else`, `MYSSH_VENV_DIR=/somewhere/else`. Skip the overwrite prompt with `MYSSH_FORCE=1`.
 
-### Windows (PowerShell)
+### Windows (PowerShell — Python edition)
 
 ```powershell
 .\install.ps1            # per-user install (default)
@@ -61,6 +80,16 @@ Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0
 ```
 
 After install, restart your terminal so `PATH` updates take effect.
+
+### Windows (Git Bash — Shell edition)
+
+If you'd rather skip Python entirely, open Git Bash and run:
+
+```bash
+./install.sh --shell
+```
+
+Git for Windows ships `ssh`, `ssh-keygen`, and `ssh-copy-id`, which is everything the shell edition needs. It installs to `~/.local/bin/myssh` inside your Git Bash home and updates `~/.bashrc` / `~/.profile` so `myssh` is on PATH the next time you open a Git Bash shell.
 
 ---
 
@@ -176,10 +205,9 @@ Host prod
 
 ## Security notes
 
-- The password is read with `getpass`, used once for the initial connect, and dropped immediately. It is not logged, not saved, and not transmitted after the public key is installed.
+- **Python edition**: the password is read with `getpass`, used once via paramiko for the initial connect, then dropped. The remote install runs via `exec_command` and reads the public key from **stdin** — key contents never get interpolated into a shell string. It also fixes `~/.ssh` to `0700` and `authorized_keys` to `0600`, and is idempotent. Unknown host keys require explicit confirmation before being added to `~/.ssh/known_hosts`.
+- **Shell edition**: the password is read by `ssh-copy-id` directly (no echo) and consumed by the SSH protocol. `ssh-copy-id` itself fixes the remote `~/.ssh` permissions and de-duplicates the public key. Unknown host keys go through OpenSSH's standard interactive prompt.
 - The private key is generated locally with `ssh-keygen -t ed25519` and never sent to the server.
-- The remote install command is run via SSH `exec_command` and reads the public key from **stdin**, so the key contents never get interpolated into a shell string. It also fixes `~/.ssh` to `0700` and `authorized_keys` to `0600`, and is idempotent (re-running won't duplicate keys).
-- Unknown host keys require explicit confirmation before being added to `~/.ssh/known_hosts`.
 - Aliases are validated against `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` and reserved subcommand names are blocked.
 
 ---
@@ -200,8 +228,10 @@ Host prod
 ## Files in this repo
 
 ```
-myssh.py        Main CLI utility (single file)
-install.sh      Mac/Linux installer
-install.ps1     Windows installer
+myssh.py        CLI — Python edition (uses paramiko)
+myssh.sh        CLI — Shell edition (pure bash, uses ssh-copy-id)
+install.sh      Mac/Linux/WSL/Git-Bash installer (--python or --shell)
+install.ps1     Windows PowerShell installer (Python edition)
 README.md       This document
+LICENSE         MIT
 ```

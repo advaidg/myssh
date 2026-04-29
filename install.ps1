@@ -1,11 +1,14 @@
 <#
 .SYNOPSIS
-    Install myssh on Windows.
+    Install myssh (Python edition) on Windows.
 
 .DESCRIPTION
     Copies myssh.py into a per-user bin directory, creates a `myssh.cmd`
-    shim that calls Python, and adds the bin directory to PATH (User scope
-    by default, System scope with -System).
+    shim that calls Python from a dedicated venv, and adds the bin
+    directory to PATH (User scope by default, System scope with -System).
+
+    For the pure-bash edition (myssh.sh), use Git Bash or WSL and run:
+        ./install.sh --shell
 
 .PARAMETER System
     Install for all users by appending to the System PATH. Falls back to
